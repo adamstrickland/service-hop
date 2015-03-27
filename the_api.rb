@@ -54,12 +54,14 @@ module TheApi
     attr_reader :reply_queue
 
     def initialize(connection, server_queue)
+      puts "setup connection"
       super(connection)
 
       @server_queue = server_queue
       @reply_queue = channel.queue("", exclusive: true)
       that = self
 
+      puts "subscirbing to reply queue"
       @reply_queue.subscribe do |_, properties, payload|
         if properties[:correlation_id] == that.call_id
           that.response = payload.to_i
@@ -69,11 +71,13 @@ module TheApi
     end
 
     def call(&block)
+      puts "building payload"
       payload = if block
                   block.call
                 else
                   ""
                 end
+      puts "publishing"
       exchange.publish(payload.to_s, routing_key: @server_queue,
                                      correlation_id: call_id,
                                      reply_to: @reply_queue.name)
@@ -105,23 +109,55 @@ module TheApi
 
     helpers do
       def rpc(queue, &block)
+        puts "init client"
         client = TheApi::DirectRpcClient.new(connection, queue)
+        puts "call client"
         client.call(&block)
       end
     end
 
     resource :benefits do
       get do
+        puts "GET benefits"
         rpc("benefits"){ params[:n] || 30 }
       end
     end
   end
 
   class PubSubRpcClient < RpcClient
-    def initialize(connection)
+    def initialize(connection, topic)
       super(connection)
+
+      @topic = topic
+
+      that = self
+
+      # @reply_queue = channel.queue(@topic, exclusive: true)
+      @reply_queue = channel.queue(@topic)
+      @reply_queue.bind(exchange, routing_key: "response.#{call_id}").subscribe do |_, properties, payload|
+        if properties[:correlation_id] == that.call_id
+          that.response = payload.to_i
+          that.lock.synchronize{ that.condition.signal }
+        end
+      end
     end
 
+    def call(&block)
+      payload = if block
+                  block.call
+                else
+                  ""
+                end
+      exchange.publish(payload.to_s, routing_key: "request.#{call_id}",
+                                     correlation_id: call_id,
+                                     reply_to: @reply_queue.name)
+      lock.synchronize{ condition.wait(lock) }
+      response
+    end
+
+    def exchange
+      @exchange ||= channel.topic(@topic)
+    end
   end
 
   class Version3 < Grape::API
@@ -130,11 +166,15 @@ module TheApi
     version 'v3', using: :accept_version_header
 
     helpers do
+      def rpc(queue, &block)
+        client = TheApi::PubSubRpcClient.new(connection, queue)
+        client.call(&block)
+      end
     end
 
     resource :benefits do
       get do
-        "OK"
+        rpc("benefits-pubsub"){ params[:n] || 30 }
       end
     end
   end

@@ -3,18 +3,30 @@ require 'bunny'
 require 'celluloid/io'
 require 'celluloid/autostart'
 
-class DirectRpcServer
-  attr_reader :channel, :queue, :exchange
+class RpcServer
+  attr_reader :connection
 
   def initialize
     @connection = Bunny.new
     @connection.start
-    @channel = @connection.create_channel
-    @exchange = @channel.default_exchange
+  end
+
+  def channel
+    @channel ||= connection.create_channel
+  end
+
+  def exchange
+    @exchange ||= channel.default_exchange
+  end
+end
+
+class DirectRpcServer < RpcServer
+  def initialize
+    super
   end
 
   def listen(queue, &block)
-    @queue = @channel.queue(queue)
+    @queue = channel.queue(queue)
     puts " [x] Awaiting RPC requests on #{queue}"
     @queue.subscribe(block: true) do |_, properties, payload|
       response = if block
@@ -22,8 +34,33 @@ class DirectRpcServer
                  else
                    ""
                  end
-      @exchange.publish(response.to_s, correlation_id: properties.correlation_id, routing_key: properties.reply_to)
+      exchange.publish(response.to_s, correlation_id: properties.correlation_id, routing_key: properties.reply_to)
     end
+  end
+end
+
+class PubSubRpcServer < RpcServer
+  def initialize(topic)
+    @topic = topic
+    super()
+  end
+
+  def exchange
+    @exchange ||= channel.topic @topic
+  end
+
+  def listen(&block)
+    queue = channel.queue(@topic)
+    queue.bind(exchange, routing_key: "request.#").subscribe do |_, properties, payload|
+      response = if block
+                   block.call(payload)
+                 else
+                   ""
+                 end
+      queue.publish(response, routing_key: "response.#{properties.correlation_id}",
+                              correlation_id: properties.correlation_id)
+    end
+
   end
 end
 
@@ -56,15 +93,24 @@ module BenefitsApi
       def shutdown; end
 
       def initialize
-        @impl = DirectRpcServer.new
         async.run
-      end
-
-      def run
-        @impl.listen("benefits"){ |p| Fibonacci.(p.to_i) }
       end
     end
 
-    Handler.new
+    Class.new(Handler) do
+      def run
+        (@impl ||= DirectRpcServer.new).listen("benefits") do |p|
+          Fibonacci.(p.to_i)
+        end
+      end
+    end.new
+
+    Class.new(Handler) do
+      def run
+        (@impl ||= PubSubRpcServer.new("benefits-pubsub")).listen do |p|
+          Fibonacci.(p.to_i)
+        end
+      end
+    end.new
   end
 end
