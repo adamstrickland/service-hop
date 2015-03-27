@@ -1,3 +1,4 @@
+#!/usr/bin/env ruby -U
 require 'bunny'
 require 'celluloid/io'
 require 'celluloid/autostart'
@@ -91,3 +92,5 @@ module BenefitsService
   # class Server < PubSubServer; end
   class Server < DirectServer; end
 end
+
+BenefitsService::Server.configure{ |_| }.start
