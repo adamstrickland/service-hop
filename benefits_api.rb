@@ -29,7 +29,7 @@ end
 
 class Fibonacci
   def self.call(n)
-    case n
+    case n.to_i
     when 0 then 0
     when 1 then 1
     else
@@ -46,7 +46,7 @@ module BenefitsApi
 
     resource :benefits do
       get do
-        Fibonacci.(params[:n] || 30)
+        Fibonacci.((params[:n] || 30).to_i)
       end
     end
 
@@ -66,10 +66,5 @@ module BenefitsApi
     end
 
     Handler.new
-
-    # @@impl = DirectRpcServer.new
-    # @@impl.listen("benefits") do |payload|
-    #   Fibonacci.(payload.to_i)
-    # end
   end
 end
